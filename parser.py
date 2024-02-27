@@ -8,6 +8,7 @@ import itertools
 import logging
 import os
 import statistics
+from datetime import datetime
 from io import BytesIO
 
 import cv2
@@ -97,6 +98,9 @@ class Document:
             last_table = self.page_dfs[-1]
             for table_df in tables:
                 if any(col in last_table.columns for col in table_df.columns):
+                    merged_table = pd.concat([last_table, table_df], ignore_index=True)
+                    self.page_dfs[-1] = merged_table
+                elif last_table.equals(table_df):
                     merged_table = pd.concat([last_table, table_df], ignore_index=True)
                     self.page_dfs[-1] = merged_table
                 else:
@@ -309,10 +313,16 @@ class Page:
 
         # Crop image, then add 20px white border
         img_to_read = img[y:y + h, x:x + w]
-        # img_to_read = np.pad(img_to_read, pad_width=20, mode='constant', constant_values=0)
+        # img_to_read = np.pad(img_to_read, pad_width=5, mode='constant', constant_values=0)
+
+        # Determine the text content based on the width of the bounding box
+        if w <= 101:  # Assuming "Buy" and "Sell" have single-character width
+            config = '--psm 9'  # Use PSM 9 for single-character text
+        else:
+            config = '--psm 6'  # Use PSM 6 for other text elements
 
         # Read text
-        text = pytesseract.image_to_string(img_to_read, config='--psm 6')
+        text = pytesseract.image_to_string(img_to_read, config=config)
         print(text, "text")
         return text
 
@@ -460,12 +470,70 @@ class Page:
             table_df.columns = table_df.iloc[0]
             table_df = table_df.iloc[1:].reset_index(drop=True)
 
+            # table_df = self.validate_data(table_df)
             tables.append(table_df)
 
         # Save tables to object
         self.tables = tables
 
         return self
+
+    def validate_data(self, table_df):
+        columns = ['Sr.\nNo', 'TM Name', 'Client\nCode', 'Buy/\nSell', 'Instrument', 'Symbol', 'Expiry Date', 'Option\nTvpe', 'Strike', 'Trade No', 'Trade Time', 'Quantity', 'Price\n(Rs.)', 'Traded Value\n(Rs.)']
+
+        table_df.columns = table_df.columns.str.strip()
+        # Define validation rules for each column
+        validation_rules = {
+            "Sr.\nNo": lambda x: int(x),
+            "TM Name": lambda x: str(x).replace("\n", " "),
+            "Client\nCode": lambda x: str(x),
+            "Buy/\nSell": lambda x: x if x in ['B', 'S'] else x.rstrip(')'),
+            "Instrument": lambda x: str(x),
+            "Symbol": lambda x: str(x),
+            "Expiry Date": lambda x: datetime.strptime(x, '%d/%m/%Y').strftime('%d/%m/%Y'),
+            "Option\nTvpe": lambda x: x if x in ['CE', 'PE', 'FF'] else x,
+            "Strike": lambda x: float(x.replace("\n", "")),
+            "Trade No": lambda x: int(x.replace(" ", "")),
+            "Trade Time": lambda x: str(x),
+            "Quantity": lambda x: int(x),
+            "Price\n(Rs.)": lambda x: float(x),
+            "Traded Value\n(Rs.)": lambda x: float(x)
+        }
+
+        # Load your dataframe here (replace df with your dataframe)
+        # df = pd.read_csv("your_dataframe.csv")
+
+        # Function to clean up a value by removing unwanted characters from the end
+        # def clean_value(column_name, value):
+        #     if column_name in validation_rules:
+        #         cleaned_value = str(value).replace('\n', '').strip().rstrip(')').strip()
+        #         if validation_rules[column_name](cleaned_value):
+        #             return cleaned_value
+        #         else:
+        #             print(f"Column {column_name} have value is {cleaned_value}")
+        #             return value  # Revert to original value
+        #     return value  # No rule found, return original value
+
+        # Initialize an empty list to store cleaned and validated rows
+        cleaned_column_values = {column: [] for column in columns}
+
+        try:
+            for column in columns:
+                if column in table_df.columns:
+                    for index, value in enumerate(table_df[column]):
+                        cleaned_value = validation_rules.get(column, lambda x: x)(value.strip())
+                        cleaned_column_values[column].append(cleaned_value)
+                else:
+                    print(f"Column {column} not found")
+        except (ValueError, KeyError) as e:
+            print(e)
+            # If there's an error, return None to indicate validation failure
+            return None
+
+        # Create a new DataFrame from the list of cleaned and validated rows
+        validated_df = pd.DataFrame(cleaned_column_values, columns=columns)
+
+        return validated_df
 
     def export_data(self):
         """
@@ -499,3 +567,5 @@ class Page:
         # .export_data()
 
         return None
+
+
